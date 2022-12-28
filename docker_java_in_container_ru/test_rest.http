@@ -1,0 +1,10 @@
+
+###
+GET http://localhost:8564/api/v1/search
+
+###
+GET http://localhost:8564/api/v1/search?q=hello message
+
+###
+GET http://localhost:8564/api/v1/search?q=привет мир
+

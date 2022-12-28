@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+
+  demo-check:
+    container_name: demo-check
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+    ports:
+      - "8564:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1g
+    networks:
+      - demo-network
+
+networks:
+  demo-network:
+    driver: bridge

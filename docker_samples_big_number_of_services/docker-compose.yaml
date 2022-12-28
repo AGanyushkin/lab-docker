@@ -1,0 +1,301 @@
+version: "3.5"  
+
+services:
+
+  traefik:
+
+    image: traefik:v2.7.1
+    container_name: traefik
+    restart: always
+    ports:
+      - 13011:13011
+      - 13001:8080
+    networks:
+      - local-docker-network
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /Alfheim/data/traefik/traefik.yml:/etc/traefik/traefik.yml
+
+  heimdall:
+    image: lscr.io/linuxserver/heimdall:2.4.12
+    container_name: heimdall
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Moscow
+    volumes:
+      - /Alfheim/data/heimdall:/config
+    ports:
+      - 80:80
+      # - 443:443
+    restart: unless-stopped
+    networks:
+      - local-docker-network
+
+  minio:
+    image: minio/minio:RELEASE.2022-06-17T02-00-35Z
+    container_name: minio
+    networks:
+      - local-docker-network
+      - shared-network
+    ports:
+      - 13012:13012
+    volumes:
+      - /Alfheim/data/minio:/data
+    environment:
+      - MINIO_ROOT_USER=AKIAIOSFODNN7EXAMPLE
+      - MINIO_ROOT_PASSWORD=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+      - MINIO_API_CORS_ALLOW_ORIGIN='*'
+    command: "server /data --console-address \":13012\""
+    depends_on:
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.minio-api.entrypoints=minio-api-endpoint
+      - traefik.http.routers.minio-api.rule=Host(`magni.midgard`)
+      - traefik.http.routers.minio-api.tls=false
+      - traefik.http.routers.minio-api.middlewares=minio-api-cors@docker
+      - traefik.http.services.minio-api.loadbalancer.server.port=9000
+      - traefik.http.middlewares.minio-api-cors.headers.accesscontrolallowmethods=GET,OPTIONS,PUT
+      - traefik.http.middlewares.minio-api-cors.headers.accesscontrolalloworiginlist=http://magni.midgard:13061
+      - traefik.http.middlewares.minio-api-cors.headers.accesscontrolmaxage=100
+      - traefik.http.middlewares.minio-api-cors.headers.addvaryheader=true
+
+  postgres:
+    image: postgres:14.3
+    container_name: postgres
+    networks:
+      - local-docker-network
+      - shared-network
+    ports:
+      - 13021:5432
+    volumes:
+      - /Alfheim/data/postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=progg
+      - POSTGRES_PASSWORD=xxx
+    restart: always
+
+  pgadmin4:
+    image: fenglc/pgadmin4:2.1
+    container_name: pgadmin4
+    networks:
+      - local-docker-network
+    ports:
+      - 13031:5050
+    environment:
+      - DEFAULT_USER=progg
+      - DEFAULT_PASSWORD=xxx
+    volumes:
+      - /Alfheim/data/pgadmin:/var/lib/pgadmin
+
+
+  # https://www.keycloak.org/getting-started/getting-started-docker
+  # https://www.keycloak.org/server/containers
+  # account console: http://magni.midgard:13041/realms/dev-realm/account
+  keycloak:
+    image: quay.io/keycloak/keycloak:18.0.0
+    container_name: keycloak
+    networks:
+      - local-docker-network
+    ports:
+      - 13041:8080
+    environment:
+      - KEYCLOAK_ADMIN=progg
+      - KEYCLOAK_ADMIN_PASSWORD=xxx
+      - KC_DB=postgres
+      - KC_DB_USERNAME=progg
+      - KC_DB_PASSWORD=xxx
+      - KC_DB_URL=jdbc:postgresql://postgres:5432/keycloak
+      - KC_FEATURES=token-exchange
+      - KC_HOSTNAME=magni.midgard
+    command: start-dev
+    restart: always
+    depends_on:
+      - postgres
+
+  redis:
+    image: redis:7.0.1
+    container_name: redis
+    restart: always
+    networks:
+      - local-docker-network
+      - shared-network
+    ports:
+      - 13051:6379
+    volumes:
+      - /Alfheim/data/redis:/data
+
+  # first run, initialization database
+  # outline:
+  #   image: outlinewiki/outline:0.64.3
+  #   networks:
+  #     - local-docker-network
+  #   container_name: outline
+  #   env_file:  .env
+  #   ports:
+  #     - 13061:13061
+  #   command: sh -c "sleep 5 && yarn sequelize:migrate --env=production-ssl-disabled"
+  #   restart: always
+  #   depends_on:
+  #     - postgres
+
+  outline:
+    image: outlinewiki/outline:0.64.3
+    networks:
+      - local-docker-network
+    container_name: outline
+    env_file: .env
+    ports:
+      - 13061:13061
+    command: yarn start --env=production-ssl-disabled
+    restart: always
+    depends_on:
+      - postgres
+      - keycloak
+      - minio
+      - redis
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.1.1
+    container_name: zookeeper
+    restart: always
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 13081
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - 13081:13081
+    networks:
+      - local-docker-network
+    volumes:
+      - /Alfheim/data/zookeeper_data:/var/lib/zookeeper/data
+      - /Alfheim/data/zookeeper_logs:/var/lib/zookeeper/log
+
+  zoonavigator:
+    image: elkozmon/zoonavigator:1.1.2
+    container_name: zoonavigator
+    depends_on:
+      - zookeeper
+    restart: always
+    environment:
+      HTTP_PORT: 13082
+    ports:
+      - 13082:13082
+    networks:
+      - local-docker-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.1.1
+    container_name: kafka
+    restart: always
+    depends_on:
+      - zookeeper
+    ports:
+      - 13091:13091
+    networks:
+      - local-docker-network
+      - shared-network
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:13081
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:9092,OUTSIDE://magni.midgard:13091
+      KAFKA_LISTENERS: INSIDE://0.0.0.0:9092,OUTSIDE://0.0.0.0:13091
+      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+     - /Alfheim/data/kafka:/var/lib/kafka/data
+
+  kafdrop:
+    image: obsidiandynamics/kafdrop:3.30.0
+    container_name: kafdrop
+    restart: always
+    depends_on:
+      - kafka
+    ports:
+      - 13101:9000
+    networks:
+      - local-docker-network
+    environment:
+      JVM_OPTS: "-Xms32M -Xmx64M"
+      SERVER_SERVLET_CONTEXTPATH: "/"
+      KAFKA_BROKERCONNECT: kafka:9092
+
+  jenkins:
+    image: jenkins/jenkins:2.360-jdk11
+    container_name: jenkins
+    restart: always
+    ports:
+      - 13111:8080
+    networks:
+      - local-docker-network
+    volumes:
+     - /Alfheim/data/jenkins_home:/var/jenkins_home
+     - /var/run/docker.sock:/var/run/docker.sock
+
+  gitea:
+    image: gitea/gitea:1.16.9
+    container_name: gitea
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__database__DB_TYPE=postgres
+      - GITEA__database__HOST=postgres:5432
+      - GITEA__database__NAME=gitea
+      - GITEA__database__USER=progg
+      - GITEA__database__PASSWD=xxx
+    restart: always
+    networks:
+      - local-docker-network
+    depends_on:
+      - postgres
+    volumes:
+      - /Alfheim/data/gitea:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 13121:13121
+      - 13122:13122
+
+  youtrack:
+    image: jetbrains/youtrack:2022.2.51836
+    container_name: youtrack
+    restart: always
+    ports:
+      - 13131:8080
+    networks:
+      - local-docker-network
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /Alfheim/data/youtrack/data:/opt/youtrack/data
+      - /Alfheim/data/youtrack/conf:/opt/youtrack/conf
+      - /Alfheim/data/youtrack/logs:/opt/youtrack/logs
+      - /Alfheim/data/youtrack/backups:/opt/youtrack/backups
+
+  wikijs:
+    image: ghcr.io/requarks/wiki:2
+    container_name: wikijs
+    depends_on:
+      - postgres
+    environment:
+      DB_TYPE: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: progg
+      DB_PASS: xxx
+      DB_NAME: wikijs
+    restart: always
+    networks:
+      - local-docker-network
+    ports:
+      - 13141:3000
+
+networks:
+
+  local-docker-network:
+    driver: bridge
+
+  shared-network:
+    external: true    
